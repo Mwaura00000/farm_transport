@@ -46,8 +46,8 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $approx_distance = floatval($_POST['approx_distance'] ?? 0);
     $preferred_datetime = !empty($_POST['preferred_datetime']) ? $_POST['preferred_datetime'] : NULL;
 
-    if (empty($produce_type) || empty($pickup_county) || empty($delivery_county) || empty($delivery_address)) {
-        $error_msg = "Please fill in all the required fields marked with an asterisk (*).";
+    if (empty($produce_type) || empty($pickup_county) || empty($delivery_county) || empty($delivery_address) || $approx_distance <= 0) {
+        $error_msg = "Please fill in all required fields and ensure distance is greater than 0.";
     } else {
         mysqli_begin_transaction($conn);
 
@@ -63,15 +63,17 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             mysqli_stmt_close($stmt1);
 
             // STEP 2: Insert into `transport_requests` table
+            $otp_code = str_pad(rand(0, 9999), 4, '0', STR_PAD_LEFT);
+            
             $sql_transport = "INSERT INTO transport_requests 
                 (farmer_id, produce_id, cargo_type, pickup_location, pickup_county, pickup_town, pickup_exact_address, pickup_description, 
-                 destination_location, delivery_county, delivery_town, delivery_exact_address, emergency_contact_name, emergency_contact_phone, distance, request_date, status) 
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')";
+                 destination_location, delivery_county, delivery_town, delivery_exact_address, emergency_contact_name, emergency_contact_phone, distance, request_date, status, otp_code) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)";
             
             $stmt2 = mysqli_prepare($conn, $sql_transport);
-            mysqli_stmt_bind_param($stmt2, "iissssssssssssds", 
+            mysqli_stmt_bind_param($stmt2, "iissssssssssssdss", 
                 $farmer_id, $produce_id, $cargo_type, $pickup_pin, $pickup_county, $pickup_town, $pickup_village, $road_condition,
-                $delivery_pin, $delivery_county, $delivery_town, $delivery_address, $contact_name, $contact_phone, $approx_distance, $preferred_datetime
+                $delivery_pin, $delivery_county, $delivery_town, $delivery_address, $contact_name, $contact_phone, $approx_distance, $preferred_datetime, $otp_code
             );
             mysqli_stmt_execute($stmt2);
             mysqli_stmt_close($stmt2);
@@ -96,16 +98,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    
     <style>
         body { font-family: 'Inter', sans-serif; background-color: #f9fafb; }
         .input-field { width: 100%; padding: 0.625rem; background-color: #f3f4f6; border: 1px solid #e5e7eb; border-radius: 0.5rem; outline: none; transition: border-color 0.2s; }
         .input-field:focus { border-color: #10b981; box-shadow: 0 0 0 1px #10b981; }
         .input-label { display: block; font-size: 0.875rem; font-weight: 500; color: #111827; margin-bottom: 0.375rem; }
+        
+        /* Map specific styling so it stays behind dropdowns */
+        #interactiveMap { height: 350px; width: 100%; border-radius: 0.75rem; z-index: 1; border: 2px solid #e5e7eb; cursor: crosshair; }
     </style>
 </head>
 <body class="text-gray-800">
 
-    <nav class="bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center sticky top-0 z-10">
+    <nav class="bg-white border-b border-gray-200 px-6 py-4 flex justify-between items-center sticky top-0 z-50">
         <div class="flex items-center gap-2 text-green-600 text-xl font-bold">
             <i class="fa-solid fa-truck-fast"></i> AgriMove
         </div>
@@ -115,7 +123,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
     </nav>
 
     <main class="max-w-4xl mx-auto py-8 px-4 sm:px-6 lg:px-8">
-        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-8">
+        <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-8 relative">
             
             <div class="mb-8">
                 <h1 class="text-2xl font-bold text-gray-900 mb-2">Create Transport Request</h1>
@@ -143,9 +151,7 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
                 <datalist id="pickupTownsList"></datalist>
                 <datalist id="deliveryTownsList"></datalist>
-                <datalist id="marketSuggestions">
-                    <option value="Wakulima Market"><option value="Kongowea Market"><option value="Muthurwa Market"><option value="Kibuye Market"><option value="Marikiti Market"><option value="Githurai Market"><option value="Karatina Market">
-                </datalist>
+                <datalist id="marketSuggestions"></datalist>
 
                 <section>
                     <h2 class="text-lg font-semibold flex items-center gap-2 mb-4 text-gray-800">
@@ -235,17 +241,18 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                         </div>
                         <div>
                             <div class="flex justify-between items-end mb-1">
-                                <label class="input-label mb-0 flex items-center gap-1">GPS Coordinates / Google Maps Pin</label>
-                                <button type="button" onclick="getFarmerLocation()" class="text-xs bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 px-3 py-1 rounded flex items-center gap-1 transition">
-                                    <i class="fa-solid fa-location-crosshairs"></i> Get My Location
+                                <label class="input-label mb-0 flex items-center gap-1">GPS Coordinates</label>
+                                <button type="button" onclick="getFarmerLocation(event)" class="text-xs bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 px-3 py-1 rounded flex items-center gap-1 transition">
+                                    <i class="fa-solid fa-location-crosshairs"></i> Get Exact Location
                                 </button>
                             </div>
                             <div class="relative">
                                 <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                                     <i class="fa-solid fa-map-pin text-gray-400"></i>
                                 </div>
-                                <input type="text" name="pickup_pin" id="pickupPin" class="input-field pl-10" placeholder="e.g. 0.5143, 35.2698">
+                                <input type="text" name="pickup_pin" id="pickupPin" class="input-field pl-10 bg-gray-100" placeholder="Click the map below to drop a pin!" readonly>
                             </div>
+                            <p class="text-xs text-gray-500 mt-1"><i class="fa-solid fa-circle-info text-blue-400"></i> Tip: You can click anywhere on the map below to set your exact farm location.</p>
                         </div>
                         <div>
                             <label class="input-label">Road Condition</label>
@@ -313,8 +320,11 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
                 <section>
                     <h2 class="text-lg font-semibold flex items-center gap-2 mb-4 text-gray-800">
-                        <i class="fa-solid fa-truck text-green-600"></i> Transport Details
+                        <i class="fa-solid fa-earth-africa text-blue-500"></i> Route Intelligence
                     </h2>
+                    
+                    <div id="interactiveMap" class="mb-6 shadow-sm"></div>
+
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
                         <div>
                             <label class="input-label">Vehicle Required</label>
@@ -330,16 +340,16 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                         
                         <div>
                             <label class="input-label flex justify-between items-end mb-1">
-                                <span>Approximate Distance (KM)</span>
-                                <button type="button" onclick="calculateAutoDistance()" class="text-xs bg-green-50 text-green-700 hover:bg-green-100 border border-green-200 px-2 py-1 rounded flex items-center gap-1 transition">
-                                    <i class="fa-solid fa-wand-magic-sparkles"></i> Auto-Calculate
+                                <span>Calculated Distance (KM) <span class="text-red-500">*</span></span>
+                                <button type="button" onclick="calculateAutoDistance()" class="text-xs bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 px-3 py-1.5 rounded flex items-center gap-1 transition font-bold shadow-sm">
+                                    <i class="fa-solid fa-route"></i> Map Route & Calculate
                                 </button>
                             </label>
                             <div class="relative">
                                 <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                                    <i class="fa-solid fa-route text-gray-400"></i>
+                                    <i class="fa-solid fa-road text-gray-400"></i>
                                 </div>
-                                <input type="number" name="approx_distance" id="distanceField" step="0.1" class="input-field pl-10" placeholder="e.g. 120">
+                                <input type="number" name="approx_distance" id="distanceField" step="0.1" min="1" required class="input-field pl-10 font-bold" placeholder="Click 'Map Route' button">
                             </div>
                         </div>
                     </div>
@@ -364,8 +374,69 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
         </div>
     </main>
 
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
     <script>
-       // --- 1. Dynamic Towns Database (All 47 Counties) ---
+        // --- 0. INITIALIZE THE LEAFLET MAP ---
+        const map = L.map('interactiveMap').setView([-0.0236, 37.9062], 6); // Centered on Kenya
+        
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(map);
+
+        let pickupMarker = null;
+        let deliveryMarker = null;
+        let routeLayer = null;
+
+        const greenIcon = new L.Icon({
+          iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-green.png',
+          shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+          iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+        });
+        
+        const redIcon = new L.Icon({
+          iconUrl: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-2x-red.png',
+          shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/0.7.7/images/marker-shadow.png',
+          iconSize: [25, 41], iconAnchor: [12, 41], popupAnchor: [1, -34], shadowSize: [41, 41]
+        });
+
+        // --- NEW: CLICK TO PLACE PICKUP PIN ---
+        map.on('click', function(e) {
+            const lat = e.latlng.lat;
+            const lng = e.latlng.lng;
+            
+            // Instantly update the input field
+            document.getElementById('pickupPin').value = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+            
+            // Move or create the marker
+            if (pickupMarker) {
+                pickupMarker.setLatLng(e.latlng);
+                if (!pickupMarker.isPopupOpen()) {
+                    pickupMarker.bindPopup("<b>Farm Location</b><br>You can drag me to adjust!").openPopup();
+                }
+            } else {
+                pickupMarker = L.marker(e.latlng, {icon: greenIcon, draggable: true})
+                    .bindPopup("<b>Farm Location</b><br>You can drag me to adjust!")
+                    .addTo(map)
+                    .openPopup();
+                    
+                // If they drag it after placing, update the box again
+                pickupMarker.on('dragend', function(event) {
+                    const position = event.target.getLatLng();
+                    document.getElementById('pickupPin').value = `${position.lat.toFixed(6)}, ${position.lng.toFixed(6)}`;
+                    
+                    // Clear the distance field to remind them to recalculate
+                    const distField = document.getElementById('distanceField');
+                    if (distField.value !== "") {
+                        distField.value = "";
+                        distField.placeholder = "Location changed! Click Calculate again.";
+                    }
+                });
+            }
+        });
+
+
+        // --- 1. Dynamic Towns Database ---
         const countyData = {
             "Mombasa": ["Mombasa Island", "Nyali", "Mtwapa", "Changamwe", "Likoni"],
             "Kwale": ["Kwale Town", "Ukunda", "Diani", "Msambweni", "Kinango"],
@@ -416,6 +487,22 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
             "Nairobi": ["Nairobi CBD", "Westlands", "Kasarani", "Embakasi", "Langata", "Roysambu", "Karen"]
         };
 
+        const marketData = {
+            "Nairobi": ["Wakulima Market", "Muthurwa Market", "Githurai Market", "Marikiti Market", "Kangemi Market"],
+            "Mombasa": ["Kongowea Market", "Majengo Market"],
+            "Kisumu": ["Kibuye Market", "Jubilee Market", "Otonglo Market"],
+            "Nakuru": ["Wakulima Market Nakuru", "Naivasha Market", "Molo Market"],
+            "Nyeri": ["Karatina Market", "Chaka Market", "Nyeri Open Air Market"],
+            "Kiambu": ["Thika Makongeni", "Wangige Market", "Ruaka Market", "Githurai 45 Market"],
+            "Uasin Gishu": ["Eldoret Main Market", "Kimumu Market", "Langas Market"],
+            "Machakos": ["Machakos Municipal Market", "Marikiti Tala", "Athi River Market"],
+            "Kakamega": ["Kakamega Municipal Market", "Lubao Market"],
+            "Bungoma": ["Chwele Market", "Bungoma Posta Market"],
+            "Meru": ["Gakoromone Market", "Maua Market"],
+            "Kisii": ["Kisii Daraja Mbili Market"],
+            "Kajiado": ["Kitengela Market", "Ngong Market", "Kiserian Market"]
+        };
+
         function updateTowns(countyInputId, datalistId) {
             const selectedCounty = document.getElementById(countyInputId).value;
             const townDatalist = document.getElementById(datalistId);
@@ -429,82 +516,164 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                     townDatalist.appendChild(option);
                 });
             }
+
+            if (countyInputId === 'deliveryCounty') {
+                const marketDatalist = document.getElementById('marketSuggestions');
+                marketDatalist.innerHTML = ''; 
+                
+                let markets = marketData[selectedCounty] || ["Main Municipal Market", "Wholesale Market"];
+                markets.forEach(market => {
+                    const option = document.createElement('option');
+                    option.value = market;
+                    marketDatalist.appendChild(option);
+                });
+            }
         }
 
-        // --- 2. Free API Auto-Distance Calculator ---
+        // --- 2. MAP ROUTE & DISTANCE CALCULATOR ---
         async function calculateAutoDistance() {
+            const pickupCounty = document.getElementById('pickupCounty').value;
             const pickupTown = document.getElementById('pickupTownInput').value;
+            const deliveryCounty = document.getElementById('deliveryCounty').value;
             const deliveryTown = document.getElementById('deliveryTownInput').value;
             const distanceInput = document.getElementById('distanceField');
             
-            if (!pickupTown || !deliveryTown) {
-                alert("Please select both a Pickup Town and a Delivery Town first.");
+            // If they already clicked the map and have a pin, we use THAT exact coordinate instead of searching the town!
+            const manualPin = document.getElementById('pickupPin').value;
+            let pLat, pLon;
+            
+            if (!deliveryTown || !deliveryCounty) {
+                alert("Please select County and Town for Delivery first.");
                 return;
             }
 
             distanceInput.value = "";
-            distanceInput.placeholder = "Calculating...";
+            distanceInput.placeholder = "Loading map and calculating...";
+
+            if(deliveryMarker) map.removeLayer(deliveryMarker);
+            if(routeLayer) map.removeLayer(routeLayer);
 
             try {
-                // Step A: Get coordinates for Pickup Town using OpenStreetMap (Free API)
-                const pickupRes = await fetch(`https://nominatim.openstreetmap.org/search?city=${pickupTown}&country=Kenya&format=json`);
-                const pickupData = await pickupRes.json();
+                // Determine Pickup Coordinates (From dragged pin OR from town search)
+                if (manualPin !== "" && manualPin.includes(",")) {
+                    const coords = manualPin.split(",");
+                    pLat = parseFloat(coords[0].trim());
+                    pLon = parseFloat(coords[1].trim());
+                } else {
+                    if (!pickupTown || !pickupCounty) {
+                        alert("Please select a Pickup County and Town, or click the map to drop a pin.");
+                        return;
+                    }
+                    const pQuery = encodeURIComponent(`${pickupTown}, ${pickupCounty}, Kenya`);
+                    const pickupRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${pQuery}&format=json&limit=1`);
+                    const pickupData = await pickupRes.json();
+                    
+                    if (pickupData.length > 0) {
+                        pLat = pickupData[0].lat;
+                        pLon = pickupData[0].lon;
+                        
+                        // Update the box and drop the pin since they didn't have one
+                        document.getElementById('pickupPin').value = `${parseFloat(pLat).toFixed(6)}, ${parseFloat(pLon).toFixed(6)}`;
+                        if(pickupMarker) map.removeLayer(pickupMarker);
+                        pickupMarker = L.marker([pLat, pLon], {icon: greenIcon, draggable: true})
+                            .bindPopup("<b>Pickup Location</b><br>Drag to fine-tune!").addTo(map);
+                            
+                        pickupMarker.on('dragend', function(event) {
+                            const position = event.target.getLatLng();
+                            document.getElementById('pickupPin').value = `${position.lat.toFixed(6)}, ${position.lng.toFixed(6)}`;
+                            distanceInput.value = "";
+                            distanceInput.placeholder = "Location changed! Click Calculate again.";
+                        });
+                    } else {
+                        distanceInput.placeholder = "Pickup town not found. Please click the map instead.";
+                        return;
+                    }
+                }
                 
-                // Step B: Get coordinates for Delivery Town
-                const deliveryRes = await fetch(`https://nominatim.openstreetmap.org/search?city=${deliveryTown}&country=Kenya&format=json`);
+                // Fetch Delivery Coordinates
+                const dQuery = encodeURIComponent(`${deliveryTown}, ${deliveryCounty}, Kenya`);
+                const deliveryRes = await fetch(`https://nominatim.openstreetmap.org/search?q=${dQuery}&format=json&limit=1`);
                 const deliveryData = await deliveryRes.json();
 
-                if (pickupData.length > 0 && deliveryData.length > 0) {
-                    const pLat = pickupData[0].lat;
-                    const pLon = pickupData[0].lon;
+                if (deliveryData.length > 0) {
                     const dLat = deliveryData[0].lat;
                     const dLon = deliveryData[0].lon;
 
-                    // Step C: Get road driving distance using OSRM (Free Routing API)
-                    const osrmRes = await fetch(`https://router.project-osrm.org/route/v1/driving/${pLon},${pLat};${dLon},${dLat}?overview=false`);
+                    deliveryMarker = L.marker([dLat, dLon], {icon: redIcon}).bindPopup("<b>Drop Off</b><br>"+deliveryTown).addTo(map);
+
+                    const osrmRes = await fetch(`https://router.project-osrm.org/route/v1/driving/${pLon},${pLat};${dLon},${dLat}?overview=full&geometries=geojson`);
                     const osrmData = await osrmRes.json();
 
                     if (osrmData.routes && osrmData.routes.length > 0) {
                         const distanceKm = (osrmData.routes[0].distance / 1000).toFixed(1);
-                        distanceInput.value = distanceKm; // Placed directly into the input box!
+                        distanceInput.value = distanceKm;
+                        
+                        routeLayer = L.geoJSON(osrmData.routes[0].geometry, {
+                            style: { color: '#3b82f6', weight: 4, opacity: 0.8 }
+                        }).addTo(map);
+                        
+                        map.fitBounds(routeLayer.getBounds(), {padding: [30, 30]});
                     } else {
-                        distanceInput.placeholder = "Route not found, enter manually";
+                        distanceInput.placeholder = "Route failed. Type manually.";
                     }
                 } else {
-                    distanceInput.placeholder = "Town not found on map, enter manually";
+                    distanceInput.placeholder = "Delivery town not found. Type manually.";
                 }
             } catch (error) {
                 console.error("API Error:", error);
-                distanceInput.placeholder = "Network error, enter manually";
+                distanceInput.placeholder = "Network error. Type manually.";
             }
         }
 
-        // --- 3. Geolocation Function ---
-        function getFarmerLocation() {
-            const statusText = document.getElementById('geoStatus');
+        // --- 3. ROBUST GPS CAPTURE ---
+        function getFarmerLocation(event) {
+            const btn = event.currentTarget;
             const pinInput = document.getElementById('pickupPin');
+            const originalText = btn.innerHTML;
 
             if (!navigator.geolocation) {
-                statusText.innerText = 'Geolocation is not supported by your browser.';
-                statusText.className = "text-xs text-red-500 mt-1";
+                alert('Geolocation is not supported by your browser.');
                 return;
             }
 
-            statusText.innerText = 'Locating... Please wait and allow permissions.';
-            statusText.className = "text-xs text-blue-500 mt-1 font-medium";
+            btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Locating...';
+            btn.disabled = true;
 
             navigator.geolocation.getCurrentPosition(
                 (position) => {
                     const latitude = position.coords.latitude;
                     const longitude = position.coords.longitude;
-                    pinInput.value = `${latitude}, ${longitude}`;
-                    statusText.innerHTML = '<i class="fa-solid fa-check text-green-500"></i> Location captured successfully!';
-                    statusText.className = "text-xs text-green-600 mt-1 font-medium";
+                    pinInput.value = `${latitude.toFixed(6)}, ${longitude.toFixed(6)}`;
+                    
+                    if(pickupMarker) map.removeLayer(pickupMarker);
+                    pickupMarker = L.marker([latitude, longitude], {icon: greenIcon, draggable: true})
+                        .bindPopup("<b>Your Farm Location</b><br>Drag to adjust!").addTo(map);
+                        
+                    pickupMarker.on('dragend', function(e) {
+                        const pos = e.target.getLatLng();
+                        document.getElementById('pickupPin').value = `${pos.lat.toFixed(6)}, ${pos.lng.toFixed(6)}`;
+                        document.getElementById('distanceField').value = "";
+                        document.getElementById('distanceField').placeholder = "Click Calculate again!";
+                    });
+                        
+                    map.flyTo([latitude, longitude], 15, {animate: true, duration: 1.5});
+
+                    btn.innerHTML = '<i class="fa-solid fa-check"></i> Location Saved';
+                    btn.classList.add('bg-green-50', 'text-green-700', 'border-green-300');
+                    btn.classList.remove('bg-blue-50', 'text-blue-600', 'border-blue-200');
+                    btn.disabled = false;
                 },
                 (error) => {
-                    statusText.innerText = 'Unable to retrieve your location. Please check your browser permissions.';
-                    statusText.className = "text-xs text-red-500 mt-1";
-                }
+                    let msg = "GPS Error: ";
+                    if (error.code === 1) msg += "Permission denied. Please allow location access in your browser pop-up.";
+                    else if (error.code === 2) msg += "Position unavailable.";
+                    else msg += error.message;
+                    
+                    alert(msg);
+                    btn.innerHTML = originalText;
+                    btn.disabled = false;
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
             );
         }
 

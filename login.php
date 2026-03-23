@@ -2,16 +2,30 @@
 session_start();
 include "db_connect.php";
 
-// If already logged in, redirect to the correct dashboard
+// --- THE LOOP BREAKER ---
+// If you are already logged in, we check your role exactly.
 if (isset($_SESSION['user_id'])) {
-    if ($_SESSION['role'] === 'farmer') header("Location: farmer_dashboard.php");
-    else header("Location: transporter_dashboard.php");
-    exit();
+    $current_role = isset($_SESSION['role']) ? strtolower(trim($_SESSION['role'])) : '';
+
+    if ($current_role === 'admin') {
+        header("Location: admin_dashboard.php");
+        exit();
+    } elseif ($current_role === 'farmer') {
+        header("Location: farmer_dashboard.php");
+        exit();
+    } elseif ($current_role === 'transporter') {
+        header("Location: transporter_dashboard.php");
+        exit();
+    } else {
+        // If your role is corrupted (not one of the 3 above), DESTROY the session instead of bouncing you!
+        session_unset();
+        session_destroy();
+    }
 }
 
 $error_msg = "";
 $success_msg = isset($_SESSION['success_msg']) ? $_SESSION['success_msg'] : "";
-unset($_SESSION['success_msg']); // Clear it after reading
+unset($_SESSION['success_msg']); 
 
 if ($_SERVER["REQUEST_METHOD"] == "POST") {
     $email = trim($_POST['email']);
@@ -28,14 +42,33 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
 
         if ($result->num_rows === 1) {
             $user = $result->fetch_assoc();
+            
             if (password_verify($password, $user['password'])) {
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['name'] = $user['name'];
-                $_SESSION['role'] = $user['role'];
                 
-                if ($user['role'] === 'farmer') header("Location: farmer_dashboard.php");
-                else header("Location: transporter_dashboard.php");
-                exit();
+                $clean_role = strtolower(trim($user['role']));
+                
+                // 1. Check if the role is actually valid BEFORE setting the session
+                if ($clean_role === 'admin' || $clean_role === 'farmer' || $clean_role === 'transporter') {
+                    
+                    $_SESSION['user_id'] = $user['id'];
+                    $_SESSION['name'] = $user['name'];
+                    $_SESSION['role'] = $clean_role;
+                    
+                    if ($clean_role === 'admin') {
+                        header("Location: admin_dashboard.php");
+                        exit();
+                    } elseif ($clean_role === 'farmer') {
+                        header("Location: farmer_dashboard.php");
+                        exit();
+                    } elseif ($clean_role === 'transporter') {
+                        header("Location: transporter_dashboard.php");
+                        exit();
+                    }
+                } else {
+                    // 2. If the database has a weird role, stop them here and show an error!
+                    $error_msg = "System Error: Your account role ('$clean_role') is not recognized. Please check the database.";
+                }
+                
             } else {
                 $error_msg = "Incorrect password. Please try again.";
             }
@@ -110,7 +143,10 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                 </div>
 
                 <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-1">Password</label>
+                    <div class="flex justify-between mb-1">
+                        <label class="block text-sm font-medium text-gray-700">Password</label>
+                        <a href="forgot_password.php" class="text-sm font-medium text-brand-600 hover:text-brand-700">Forgot password?</a>
+                    </div>
                     <div class="relative">
                         <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                             <i class="fa-solid fa-lock text-gray-400"></i>
@@ -130,7 +166,6 @@ if ($_SERVER["REQUEST_METHOD"] == "POST") {
                         <input type="checkbox" class="w-4 h-4 text-brand-600 rounded border-gray-300 focus:ring-brand-500">
                         <span class="text-sm text-gray-600">Remember me</span>
                     </label>
-                    <a href="forgot_password.php" class="text-sm font-medium text-brand-600 hover:text-brand-700">Forgot password?</a>
                 </div>
 
                 <button type="submit" class="w-full bg-brand-600 hover:bg-brand-700 text-white font-bold py-3.5 rounded-xl transition shadow-lg shadow-brand-500/30 mt-4">
